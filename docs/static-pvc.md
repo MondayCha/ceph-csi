@@ -13,11 +13,13 @@
       - [Node stage secret ref in CephFS PV](#node-stage-secret-ref-in-cephfs-pv)
       - [CephFS volume attributes in PV](#cephfs-volume-attributes-in-pv)
       - [Create CephFS static PVC](#create-cephfs-static-pvc)
+      - [Verify PVC creation](#verify-pvc-creation)
 
 This document outlines how to create static PV and static PVC from
 existing rbd image/cephFS volume.
 
-**warning** static PVC can be created, deleted, mounted and unmounted but
+> [!warning]
+> static PVC can be created, deleted, mounted and unmounted but
 currently ceph-csi doesn't support other operations like snapshot,clone,
 resize, etc for static PVC
 
@@ -28,7 +30,8 @@ shows how to create a rbd image, static PV, static PVC
 
 ### Create RBD image
 
-If you already have a rbd image created and contains some data which you want
+> [!tip]
+> If you already have a rbd image created and contains some data which you want
 to access by the application pod you can skip this step.
 
 Lets create a new rbd image in ceph cluster which we are going to use for
@@ -88,7 +91,8 @@ static RBD PV
 | imageFeatures |       CSI RBD currently supports `layering, journaling, exclusive-lock` features. If `journaling` is enabled, must enable `exclusive-lock` too       |   Yes    |
 |    mounter    |                      If set to `rbd-nbd`, use `rbd-nbd` on nodes that have `rbd-nbd` and `nbd` kernel modules to map rbd images                      |    No    |
 
-**Note** ceph-csi does not supports rbd image deletion for static PV.
+> [!note]
+> ceph-csi does not supports rbd image deletion for static PV.
 `persistentVolumeReclaimPolicy` in PV spec must be set to `Retain` to avoid PV
 delete attempt in csi-provisioner.
 
@@ -140,24 +144,27 @@ size to match the size of the rbd image.
 Now scale down the application pod which is using `cephfs-static-pvc` and scale
 up the application pod to resize the filesystem.
 
-**Note** If you have mounted same static PVC to multiple application pods, make
+> [!note]
+> If you have mounted same static PVC to multiple application pods, make
 sure you will scale down all the application pods and make sure no application
 pods using the static PVC is running on the node and scale up all the
 application pods again(this will trigger `NodeStageVolumeRequest` which will
 resize the filesystem for static volume).
 
-**Note** deleting PV and PVC does not removed the backend rbd image, user need to
+> [!note]
+> deleting PV and PVC does not removed the backend rbd image, user need to
 manually delete the rbd image if required
 
 ## CephFS static PVC
 
-CephFS subvolume created manually can be mounted and unmounted to an app,
-below steps show how to create a CephFS subvolume, static PV and static PVC.
+CephFS subvolume or volume created manually can be mounted and unmounted to an app,
+below steps show how to create a CephFS subvolume or volume, static PV and static PVC.
 
 ### Create CephFS subvolume
 
-If you already have a CephFS subvolume created and contains some data
-which you want to access by the application pod you can skip this step.
+> [!tip]
+> If you already have a CephFS subvolume or volume created and contains some data
+which you want to access by the application pod, you can skip this step.
 
 Lets create a new CephFS subvolume of size 1 GiB in ceph cluster which
 we are going to use for static PVC, before that we need to create
@@ -172,17 +179,20 @@ ceph fs subvolumegroup create myfs testGroup
 ceph fs subvolume create myfs testSubVolume testGroup --size=1073741824
 ```
 
-**Note:** volume here refers to the filesystem.
+> [!note]
+> volume here refers to the filesystem.
 
 ### Create CephFS static PV
 
 To create the CephFS PV you need to know the `volume rootpath`, and `clusterID`,
-here is the command to get the root path in ceph cluster
+here is the command to get the root path of subvolume in ceph cluster
 
 ```bash
 $ ceph fs subvolume getpath myfs testSubVolume testGroup
 /volumes/testGroup/testSubVolume
 ```
+
+For volume, you can directly use the folder path relative to the filesystem as the `rootpath`.
 
 ```yaml
 apiVersion: v1
@@ -215,6 +225,45 @@ spec:
   volumeMode: Filesystem
 ```
 
+If you are a [Rook](https://rook.io/) user, there are some differences, such as:
+
+1. `driver` should be `rook-ceph.cephfs.csi.ceph.com`.
+2. `nodeStageSecretRef` can use the `rook-csi-cephfs-node` secret in the `rook-ceph` namespace,
+   but please refer to the [next section](#node-stage-secret-ref-in-cephfs-pv)
+   to append userID and userKey.
+4. `clusterID` should be `rook-ceph`.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: cephfs-static-pv
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 1Gi
+  csi:
+    driver: rook-ceph.cephfs.csi.ceph.com
+    nodeStageSecretRef:
+      # node stage secret name, userID and userKey are necessary
+      name: rook-csi-cephfs-node
+      # node stage secret namespace where above secret is created
+      namespace: rook-ceph
+    volumeAttributes:
+      # optional file system to be mounted
+      "fsName": "myfs"
+      # Required options from storageclass parameters need to be added in volumeAttributes
+      "clusterID": "rook-ceph"
+      "staticVolume": "true"
+      "rootPath": /path/to/folder
+    # volumeHandle can be anything, need not to be same
+    # as PV name or volume name. keeping same for brevity
+    volumeHandle: cephfs-static-pv
+  persistentVolumeReclaimPolicy: Retain
+  volumeMode: Filesystem
+```
+
 ### Node stage secret ref in CephFS PV
 
 For static CephFS PV to work, userID and userKey needs to be specified in the
@@ -231,7 +280,7 @@ static CephFS PV
 |  clusterID   | The clusterID is used by the CSI plugin to uniquely identify and use a Ceph cluster (this is the key in configmap created duing ceph-csi deployment) |   Yes    |
 |    fsName    |                                      CephFS filesystem name to be mounted. Not passing this option mounts the default file system.                                       |   No    |
 | staticVolume |                                           Value must be set to `true` to mount and unmount static cephFS PVC                                         |   Yes    |
-|   rootPath   |                     Actual path of the subvolume in ceph cluster, can be retrieved by issuing getpath command as described above                     |   Yes    |
+|   rootPath   |                     Actual path of the subvolume in ceph cluster which can be retrieved by issuing getpath command as described above, or folder path of the volume                    |   Yes    |
 
 **Note** ceph-csi does not supports CephFS subvolume deletion for static PV.
 `persistentVolumeReclaimPolicy` in PV spec must be set to `Retain` to avoid PV
@@ -269,5 +318,42 @@ $ kubectl create -f cephfs-static-pvc.yaml
 persistentvolumeclaim/cephfs-static-pvc created
 ```
 
-**Note** deleting PV and PVC does not delete the backend CephFS subvolume,
+### Verify PVC creation
+
+We can verify the PVC creation by running a Pod that mounts the PVC.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cephfs-static-pvc-test
+  namespace: default
+spec:
+  containers:
+    - name: busybox
+      image: busybox:latest
+      volumeMounts:
+        - name: static-pvc
+          mountPath: /data/pvc
+      command: ["sleep", "3600"]
+  volumes:
+    - name: static-pvc
+      persistentVolumeClaim:
+        claimName: cephfs-static-pvc
+        readOnly: false
+```
+
+```bash
+$ kubectl create -f cephfs-static-pvc-test.yaml
+pod/cephfs-static-pvc-test created
+```
+
+Verify that the PVC has been successfully mounted.
+
+```bash
+kubectl exec cephfs-static-pvc-test -- ls /data/pvc
+```
+
+> [!note]
+> deleting PV and PVC does not delete the backend CephFS subvolume,
 user needs to manually delete the CephFS subvolume if required.
